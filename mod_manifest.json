@@ -1,0 +1,7 @@
+{
+  "pck_name": "STS2-ShowIncomingDamage",
+  "name": "Show Incoming Damage",
+  "author": "OLC",
+  "description": "Show incoming damage for all players in multiplayer, with proper damage calculation including block and pets",
+  "version": "0.0.1"
+}
