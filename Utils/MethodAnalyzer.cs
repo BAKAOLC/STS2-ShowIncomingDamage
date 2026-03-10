@@ -192,6 +192,39 @@ namespace STS2ShowIncomingDamage.Utils
             }
         }
 
+        /// <summary>
+        /// Checks if a method calls Damage targeting enemies (via HittableEnemies or similar patterns).
+        /// Returns true if the damage targets enemies, false if it targets the player/owner.
+        /// </summary>
+        public static bool MethodDamagesEnemies(Type type, string methodName)
+        {
+            try
+            {
+                var method = GetCachedMethod(type, methodName);
+                if (method == null) return false;
+
+                // Check if method calls get_HittableEnemies - this indicates damage to enemies
+                if (MethodCallsMethod(method, "get_HittableEnemies"))
+                    return true;
+
+                // Check async state machine
+                var stateMachineType = GetAsyncStateMachineType(method);
+                if (stateMachineType != null)
+                {
+                    var moveNextMethod = stateMachineType.GetMethod("MoveNext",
+                        BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                    if (moveNextMethod != null && MethodCallsMethod(moveNextMethod, "get_HittableEnemies"))
+                        return true;
+                }
+
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public static void ClearCache()
         {
             TypeMethodOverrideCache.Clear();

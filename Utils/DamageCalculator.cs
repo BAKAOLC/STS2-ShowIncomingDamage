@@ -28,6 +28,8 @@ namespace STS2ShowIncomingDamage.Utils
         private static readonly Dictionary<Type, bool> RelicAfterTurnEndCallsHpLossCache = [];
         private static readonly Dictionary<Type, bool> RelicHasAfterTurnEndCache = [];
         private static readonly Dictionary<Type, bool> RelicModifiesOrbPassiveTriggerCache = [];
+        private static readonly Dictionary<Type, bool> RelicBeforeTurnEndDamagesEnemiesCache = [];
+        private static readonly Dictionary<Type, bool> RelicAfterTurnEndDamagesEnemiesCache = [];
         private static string? _cachedBlockKeyword;
 
         private static string BlockKeyword =>
@@ -463,6 +465,9 @@ namespace STS2ShowIncomingDamage.Utils
                     if (RelicHasBeforeTurnEndOverride(relicType))
                         if (RelicBeforeTurnEndCallsDamage(relicType) || RelicBeforeTurnEndCallsHpLoss(relicType))
                         {
+                            if (RelicBeforeTurnEndDamagesEnemies(relicType))
+                                continue;
+
                             var damageAmount = GetRelicDamageAmount(relic);
                             if (damageAmount > 0)
                             {
@@ -475,6 +480,10 @@ namespace STS2ShowIncomingDamage.Utils
                     {
                         if (!RelicAfterTurnEndCallsDamage(relicType) && !RelicAfterTurnEndCallsHpLoss(relicType))
                             continue;
+
+                        if (RelicAfterTurnEndDamagesEnemies(relicType))
+                            continue;
+
                         var damageAmount = GetRelicDamageAmount(relic);
                         if (damageAmount <= 0) continue;
                         var relicName = relic.Title.GetFormattedText();
@@ -626,6 +635,26 @@ namespace STS2ShowIncomingDamage.Utils
 
             var result = MethodAnalyzer.MethodCallsMethod(relicType, "AfterTurnEnd", "HpLoss");
             RelicAfterTurnEndCallsHpLossCache[relicType] = result;
+            return result;
+        }
+
+        private static bool RelicBeforeTurnEndDamagesEnemies(Type relicType)
+        {
+            if (RelicBeforeTurnEndDamagesEnemiesCache.TryGetValue(relicType, out var cached))
+                return cached;
+
+            var result = MethodAnalyzer.MethodDamagesEnemies(relicType, "BeforeTurnEnd");
+            RelicBeforeTurnEndDamagesEnemiesCache[relicType] = result;
+            return result;
+        }
+
+        private static bool RelicAfterTurnEndDamagesEnemies(Type relicType)
+        {
+            if (RelicAfterTurnEndDamagesEnemiesCache.TryGetValue(relicType, out var cached))
+                return cached;
+
+            var result = MethodAnalyzer.MethodDamagesEnemies(relicType, "AfterTurnEnd");
+            RelicAfterTurnEndDamagesEnemiesCache[relicType] = result;
             return result;
         }
 
