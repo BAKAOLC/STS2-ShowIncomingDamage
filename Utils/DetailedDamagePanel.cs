@@ -296,6 +296,7 @@ namespace STS2ShowIncomingDamage.Utils
                     PowerModel power => power.PackedIconPath,
                     CardModel card => card.PortraitPath,
                     OrbModel orb => ImageHelper.GetImagePath($"orbs/{orb.Id.Entry.ToLowerInvariant()}.png"),
+                    RelicModel relic => relic.PackedIconPath,
                     _ => null,
                 };
 
@@ -316,6 +317,7 @@ namespace STS2ShowIncomingDamage.Utils
                 "Enemy" => PanelColors.EnemyDamage,
                 "Orb" => PanelColors.OrbBlock,
                 "Block" => PanelColors.BlockUsed,
+                "Relic" => PanelColors.RelicColor,
                 _ => PanelColors.Text,
             };
         }
@@ -326,6 +328,7 @@ namespace STS2ShowIncomingDamage.Utils
             {
                 "Power" => PanelColors.PowerBlock,
                 "Orb" => PanelColors.OrbBlock,
+                "Relic" => PanelColors.RelicBlock,
                 _ => PanelColors.BlockUsed,
             };
         }
@@ -441,6 +444,8 @@ namespace STS2ShowIncomingDamage.Utils
             public static readonly Color PetDamage = new(1f, 0.62f, 0.26f);
             public static readonly Color PlayerDamage = new(0.93f, 0.35f, 0.44f);
             public static readonly Color Safe = new(0.66f, 0.9f, 0.81f);
+            public static readonly Color RelicColor = new(0.85f, 0.75f, 0.45f);
+            public static readonly Color RelicBlock = new(0.75f, 0.65f, 0.35f);
         }
     }
 }

@@ -17,6 +17,17 @@ namespace STS2ShowIncomingDamage.Utils
         private static readonly Dictionary<Type, bool> PowerAfterTurnEndCallsHpLossCache = [];
         private static readonly Dictionary<Type, bool> OrbHasBeforeTurnEndCache = [];
         private static readonly Dictionary<Type, bool> OrbPassiveGivesBlockCache = [];
+        private static readonly Dictionary<Type, bool> OrbEvokeGivesBlockCache = [];
+        private static readonly Dictionary<Type, bool> RelicHasBeforeTurnEndCache = [];
+        private static readonly Dictionary<Type, bool> RelicBeforeTurnEndGivesBlockCache = [];
+        private static readonly Dictionary<Type, bool> RelicHasBeforeTurnEndVeryEarlyCache = [];
+        private static readonly Dictionary<Type, bool> RelicBeforeTurnEndVeryEarlyChecksBlockCache = [];
+        private static readonly Dictionary<Type, bool> RelicBeforeTurnEndCallsDamageCache = [];
+        private static readonly Dictionary<Type, bool> RelicBeforeTurnEndCallsHpLossCache = [];
+        private static readonly Dictionary<Type, bool> RelicAfterTurnEndCallsDamageCache = [];
+        private static readonly Dictionary<Type, bool> RelicAfterTurnEndCallsHpLossCache = [];
+        private static readonly Dictionary<Type, bool> RelicHasAfterTurnEndCache = [];
+        private static readonly Dictionary<Type, bool> RelicModifiesOrbPassiveTriggerCache = [];
         private static string? _cachedBlockKeyword;
 
         private static string BlockKeyword =>
@@ -64,6 +75,7 @@ namespace STS2ShowIncomingDamage.Utils
             var blockList = new List<(int amount, string source, string sourceType, object? sourceObject)>();
             CollectPowerBlockGain(playerCreature, blockList);
             CollectOrbBlockGain(playerCreature, blockList);
+            CollectRelicBlockGain(playerCreature, blockList);
             result.BlockGain = blockList.Sum(b => b.amount);
 
             var damageList = new List<(int amount, string source, string sourceType, object? sourceObject)>();
@@ -71,6 +83,7 @@ namespace STS2ShowIncomingDamage.Utils
             damageList.AddRange(cardDamages);
             var powerDamages = CalculateEndOfTurnPowerDamage(playerCreature);
             damageList.AddRange(powerDamages);
+            CollectRelicDamage(playerCreature, damageList);
 
             foreach (var enemy in combatState.Enemies)
             {
@@ -311,18 +324,72 @@ namespace STS2ShowIncomingDamage.Utils
                 if (creature.Player?.PlayerCombatState?.OrbQueue == null)
                     return;
 
-                blockList.AddRange(
-                    (from orb in creature.Player.PlayerCombatState.OrbQueue.Orbs
-                        let orbType = orb.GetType()
-                        where HasBeforeTurnEndOrbTriggerOverride(orbType) && OrbPassiveGivesBlock(orbType)
-                        let blockAmount = (int)orb.PassiveVal
-                        let orbName = orb.Title.GetFormattedText()
-                        select (blockAmount, orbName, "Orb", orb)).Select(dummy =>
-                        ((int amount, string source, string sourceType, object? sourceObject))dummy));
+                var orbs = creature.Player.PlayerCombatState.OrbQueue.Orbs;
+                if (orbs.Count == 0)
+                    return;
+
+                foreach (var orb in orbs)
+                {
+                    var orbType = orb.GetType();
+
+                    if (!HasBeforeTurnEndOrbTriggerOverride(orbType) || !OrbPassiveGivesBlock(orbType))
+                        continue;
+
+                    var blockAmount = (int)orb.PassiveVal;
+                    var orbName = orb.Title.GetFormattedText();
+
+                    var triggerCount = CalculateOrbPassiveTriggerCount(creature, orb);
+
+                    for (var t = 0; t < triggerCount; t++)
+                        blockList.Add((blockAmount, orbName, "Orb", orb));
+                }
+
+                CollectOrbEvokeBlockGain(creature, blockList);
             }
             catch (Exception ex)
             {
                 Main.Logger.Error($"Failed to calculate orb block gain: {ex.Message}");
+            }
+        }
+
+        private static void CollectOrbEvokeBlockGain(Creature creature,
+            List<(int amount, string source, string sourceType, object? sourceObject)> blockList)
+        {
+            try
+            {
+                foreach (var power in creature.Powers)
+                {
+                    var powerType = power.GetType();
+                    if (!HasAfterTurnEndOverride(powerType))
+                        continue;
+
+                    if (!MethodAnalyzer.MethodCallsMethod(powerType, "AfterTurnEnd", "EvokeLast"))
+                        continue;
+
+                    var orbs = creature.Player?.PlayerCombatState?.OrbQueue?.Orbs;
+                    if (orbs == null || orbs.Count == 0)
+                        continue;
+
+                    var evokeCount = Math.Min(power.Amount, orbs.Count);
+                    for (var i = 0; i < evokeCount; i++)
+                    {
+                        var orbIndex = orbs.Count - 1 - i;
+                        if (orbIndex < 0) break;
+
+                        var orb = orbs[orbIndex];
+                        var orbType = orb.GetType();
+
+                        if (!OrbEvokeGivesBlock(orbType)) continue;
+                        var blockAmount = (int)orb.EvokeVal;
+                        if (blockAmount <= 0) continue;
+                        var orbName = orb.Title.GetFormattedText();
+                        blockList.Add((blockAmount, $"{orbName} (Evoke)", "Orb", orb));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Main.Logger.Error($"Failed to calculate orb evoke block gain: {ex.Message}");
             }
         }
 
@@ -343,6 +410,223 @@ namespace STS2ShowIncomingDamage.Utils
             {
                 Main.Logger.Error($"Failed to calculate power block gain: {ex.Message}");
             }
+        }
+
+        private static void CollectRelicBlockGain(Creature creature,
+            List<(int amount, string source, string sourceType, object? sourceObject)> blockList)
+        {
+            try
+            {
+                if (creature.Player?.Relics == null)
+                    return;
+
+                foreach (var relic in creature.Player.Relics)
+                {
+                    if (relic.IsMelted || relic.IsUsedUp)
+                        continue;
+
+                    var relicType = relic.GetType();
+
+                    if (!RelicHasBeforeTurnEndOverride(relicType) || !RelicBeforeTurnEndGivesBlock(relicType)) continue;
+                    if (RelicHasBeforeTurnEndVeryEarlyOverride(relicType) &&
+                        RelicBeforeTurnEndVeryEarlyChecksBlock(relicType))
+                        if (creature.Block > 0)
+                            continue;
+
+                    var blockAmount = GetRelicBlockAmount(relic);
+                    if (blockAmount <= 0) continue;
+                    var relicName = relic.Title.GetFormattedText();
+                    blockList.Add((blockAmount, relicName, "Relic", relic));
+                }
+            }
+            catch (Exception ex)
+            {
+                Main.Logger.Error($"Failed to calculate relic block gain: {ex.Message}");
+            }
+        }
+
+        private static void CollectRelicDamage(Creature creature,
+            List<(int amount, string source, string sourceType, object? sourceObject)> damageList)
+        {
+            try
+            {
+                if (creature.Player?.Relics == null)
+                    return;
+
+                foreach (var relic in creature.Player.Relics)
+                {
+                    if (relic.IsMelted || relic.IsUsedUp)
+                        continue;
+
+                    var relicType = relic.GetType();
+
+                    if (RelicHasBeforeTurnEndOverride(relicType))
+                        if (RelicBeforeTurnEndCallsDamage(relicType) || RelicBeforeTurnEndCallsHpLoss(relicType))
+                        {
+                            var damageAmount = GetRelicDamageAmount(relic);
+                            if (damageAmount > 0)
+                            {
+                                var relicName = relic.Title.GetFormattedText();
+                                damageList.Add((damageAmount, relicName, "Relic", relic));
+                            }
+                        }
+
+                    if (!RelicHasAfterTurnEndOverride(relicType)) continue;
+                    {
+                        if (!RelicAfterTurnEndCallsDamage(relicType) && !RelicAfterTurnEndCallsHpLoss(relicType))
+                            continue;
+                        var damageAmount = GetRelicDamageAmount(relic);
+                        if (damageAmount <= 0) continue;
+                        var relicName = relic.Title.GetFormattedText();
+                        damageList.Add((damageAmount, relicName, "Relic", relic));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Main.Logger.Error($"Failed to calculate relic damage: {ex.Message}");
+            }
+        }
+
+        private static int GetRelicBlockAmount(RelicModel relic)
+        {
+            try
+            {
+                var traverse = Traverse.Create(relic);
+                var dynamicVars = traverse.Property("DynamicVars").GetValue();
+                if (dynamicVars == null) return 0;
+
+                var blockVar = Traverse.Create(dynamicVars).Property("Block").GetValue();
+                if (blockVar == null) return 0;
+
+                var intValue = Traverse.Create(blockVar).Property("IntValue").GetValue<int>();
+                return intValue;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static int GetRelicDamageAmount(RelicModel relic)
+        {
+            try
+            {
+                var traverse = Traverse.Create(relic);
+                var dynamicVars = traverse.Property("DynamicVars").GetValue();
+                if (dynamicVars == null) return 0;
+
+                var damageVar = Traverse.Create(dynamicVars).Property("Damage").GetValue();
+                if (damageVar != null)
+                {
+                    var intValue = Traverse.Create(damageVar).Property("IntValue").GetValue<int>();
+                    if (intValue > 0) return intValue;
+                }
+
+                var hpLossVar = Traverse.Create(dynamicVars).Property("HpLoss").GetValue();
+                if (hpLossVar == null) return 0;
+                {
+                    var intValue = Traverse.Create(hpLossVar).Property("IntValue").GetValue<int>();
+                    if (intValue > 0) return intValue;
+                }
+
+                return 0;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static bool RelicHasBeforeTurnEndOverride(Type relicType)
+        {
+            if (RelicHasBeforeTurnEndCache.TryGetValue(relicType, out var cached))
+                return cached;
+
+            var result = MethodAnalyzer.TypeHasMethodOverride(relicType, "BeforeTurnEnd", typeof(AbstractModel));
+            RelicHasBeforeTurnEndCache[relicType] = result;
+            return result;
+        }
+
+        private static bool RelicBeforeTurnEndGivesBlock(Type relicType)
+        {
+            if (RelicBeforeTurnEndGivesBlockCache.TryGetValue(relicType, out var cached))
+                return cached;
+
+            var result = MethodAnalyzer.MethodCallsMethod(relicType, "BeforeTurnEnd", "GainBlock");
+            RelicBeforeTurnEndGivesBlockCache[relicType] = result;
+            return result;
+        }
+
+        private static bool RelicHasBeforeTurnEndVeryEarlyOverride(Type relicType)
+        {
+            if (RelicHasBeforeTurnEndVeryEarlyCache.TryGetValue(relicType, out var cached))
+                return cached;
+
+            var result =
+                MethodAnalyzer.TypeHasMethodOverride(relicType, "BeforeTurnEndVeryEarly", typeof(AbstractModel));
+            RelicHasBeforeTurnEndVeryEarlyCache[relicType] = result;
+            return result;
+        }
+
+        private static bool RelicBeforeTurnEndVeryEarlyChecksBlock(Type relicType)
+        {
+            if (RelicBeforeTurnEndVeryEarlyChecksBlockCache.TryGetValue(relicType, out var cached))
+                return cached;
+
+            var result = MethodAnalyzer.MethodCallsMethod(relicType, "BeforeTurnEndVeryEarly", "get_Block");
+            RelicBeforeTurnEndVeryEarlyChecksBlockCache[relicType] = result;
+            return result;
+        }
+
+        private static bool RelicBeforeTurnEndCallsDamage(Type relicType)
+        {
+            if (RelicBeforeTurnEndCallsDamageCache.TryGetValue(relicType, out var cached))
+                return cached;
+
+            var result = MethodAnalyzer.MethodCallsMethod(relicType, "BeforeTurnEnd", "Damage");
+            RelicBeforeTurnEndCallsDamageCache[relicType] = result;
+            return result;
+        }
+
+        private static bool RelicBeforeTurnEndCallsHpLoss(Type relicType)
+        {
+            if (RelicBeforeTurnEndCallsHpLossCache.TryGetValue(relicType, out var cached))
+                return cached;
+
+            var result = MethodAnalyzer.MethodCallsMethod(relicType, "BeforeTurnEnd", "HpLoss");
+            RelicBeforeTurnEndCallsHpLossCache[relicType] = result;
+            return result;
+        }
+
+        private static bool RelicHasAfterTurnEndOverride(Type relicType)
+        {
+            if (RelicHasAfterTurnEndCache.TryGetValue(relicType, out var cached))
+                return cached;
+
+            var result = MethodAnalyzer.TypeHasMethodOverride(relicType, "AfterTurnEnd", typeof(AbstractModel));
+            RelicHasAfterTurnEndCache[relicType] = result;
+            return result;
+        }
+
+        private static bool RelicAfterTurnEndCallsDamage(Type relicType)
+        {
+            if (RelicAfterTurnEndCallsDamageCache.TryGetValue(relicType, out var cached))
+                return cached;
+
+            var result = MethodAnalyzer.MethodCallsMethod(relicType, "AfterTurnEnd", "Damage");
+            RelicAfterTurnEndCallsDamageCache[relicType] = result;
+            return result;
+        }
+
+        private static bool RelicAfterTurnEndCallsHpLoss(Type relicType)
+        {
+            if (RelicAfterTurnEndCallsHpLossCache.TryGetValue(relicType, out var cached))
+                return cached;
+
+            var result = MethodAnalyzer.MethodCallsMethod(relicType, "AfterTurnEnd", "HpLoss");
+            RelicAfterTurnEndCallsHpLossCache[relicType] = result;
+            return result;
         }
 
         private static bool HasAfterTurnEndOverride(Type powerType)
@@ -382,6 +666,48 @@ namespace STS2ShowIncomingDamage.Utils
 
             var result = MethodAnalyzer.MethodCallsMethod(orbType, "Passive", "GainBlock");
             OrbPassiveGivesBlockCache[orbType] = result;
+            return result;
+        }
+
+        private static bool OrbEvokeGivesBlock(Type orbType)
+        {
+            if (OrbEvokeGivesBlockCache.TryGetValue(orbType, out var cached))
+                return cached;
+
+            var result = MethodAnalyzer.MethodCallsMethod(orbType, "Evoke", "GainBlock");
+            OrbEvokeGivesBlockCache[orbType] = result;
+            return result;
+        }
+
+        private static int CalculateOrbPassiveTriggerCount(Creature creature, OrbModel orb)
+        {
+            var triggerCount = 1;
+
+            try
+            {
+                if (creature.Player?.Relics == null)
+                    return triggerCount;
+
+                triggerCount = creature.Player.Relics.Where(relic => relic is { IsMelted: false, IsUsedUp: false })
+                    .Where(relic => RelicModifiesOrbPassiveTrigger(relic.GetType())).Aggregate(triggerCount,
+                        (current, relic) => relic.ModifyOrbPassiveTriggerCounts(orb, current));
+            }
+            catch (Exception ex)
+            {
+                Main.Logger.Error($"Failed to calculate orb passive trigger count: {ex.Message}");
+            }
+
+            return triggerCount;
+        }
+
+        private static bool RelicModifiesOrbPassiveTrigger(Type relicType)
+        {
+            if (RelicModifiesOrbPassiveTriggerCache.TryGetValue(relicType, out var cached))
+                return cached;
+
+            var result =
+                MethodAnalyzer.TypeHasMethodOverride(relicType, "ModifyOrbPassiveTriggerCounts", typeof(RelicModel));
+            RelicModifiesOrbPassiveTriggerCache[relicType] = result;
             return result;
         }
 
